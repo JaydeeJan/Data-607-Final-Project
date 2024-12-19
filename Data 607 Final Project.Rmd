@@ -1,0 +1,172 @@
+---
+title: "Data 607 Final Project"
+author: "Jayden Jiang"
+date: "2024-12-17"
+output: html_document
+---
+
+## Library
+```{r}
+library(httr)
+library(jsonlite)
+library(dplyr)
+library(tidyverse)
+library(ggplot2)
+library(data.table)
+library(readr)
+```
+
+## Motivation:
+Motivation: Understanding the relationship between hospital bed usage and COVID-19 case counts can help identify trends in healthcare system strain. By analyzing this correlation, public health officials and policymakers can better anticipate surges in healthcare demand, allocate resources more effectively, and improve crisis response strategies.
+
+## Project Overview
+This project will utilize data from three key sources to conduct the analysis:
+1.	WHO COVID-19 Global Daily Data
+2.	Vaccination Data
+3.	COVID Act Now U.S. States Time Series Data
+These datasets will be analyzed independently to explore the global and U.S.-specific trends in COVID-19 cases, deaths, vaccination coverage, and ICU capacity. The analysis will include data cleaning, exploration, statistical analysis, hypothesis testing, and visualization to provide clear insights into the relationship between vaccination rates and health outcomes.
+
+## Data Acquisition 
+Pull data from the COVID Act Now API using authenticated requests if required and import them into R. 
+```{r}
+# Store API Key
+file.edit("~/.Renviron")
+api_key <- Sys.getenv("COVID_ACT_NOW_API_KEY")
+if (api_key == "") {
+  stop("API Key not found.")
+}
+
+# Define API endpoint URLs
+state_data <- paste0("https://api.covidactnow.org/v2/states.timeseries.csv?apiKey=", api_key)
+
+# Load WHO COVID-19 daily case/death data
+who_global_cases <- read.csv("https://raw.githubusercontent.com/JaydeeJan/Data-607-Final-Project/refs/heads/main/WHO-COVID-19-global-daily-data.csv")
+
+# Load WHO COVID-19 Vaccination Data
+who_global_vaccine <- read.csv("https://raw.githubusercontent.com/JaydeeJan/Data-607-Final-Project/refs/heads/main/vaccination-data.csv")
+
+# Download Data 
+local_path <- "covid_states_timeseries.csv"
+tryCatch({
+  download.file(state_data, destfile = local_path, mode = "wb")
+  print("File downloaded successfully.")
+}, error = function(e) {
+  print(paste("Failed to download the file.", e$message))
+})
+
+state_covid_data <- fread("covid_states_timeseries.csv")
+```
+
+## Data Cleaning and Transformation
+```{r}
+# Handling duplicates 
+who_global_cleaned <- who_global_cases %>%
+  distinct() %>%
+  mutate(
+    Date_reported = parse_date_time(Date_reported, orders = c("ymd", "dmy", "mdy"))
+  ) %>%
+  filter(!is.na(Date_reported)) %>%
+  filter(New_cases >= 0)
+
+who_vacine_cleaned <- who_global_vaccine %>%
+  distinct() %>%
+  mutate(
+    FIRST_VACCINE_DATE = parse_date_time(FIRST_VACCINE_DATE, orders = c("ymd", "dmy", "mdy"))
+  ) %>%
+  filter(!is.na(FIRST_VACCINE_DATE))
+
+state_df_cleaned <- state_covid_data %>%
+  distinct() %>%
+  mutate(date = as.Date(date)) %>%
+  filter(!is.na(date))
+  
+# Pivot datasets to long format 
+who_cases_long <- who_global_cleaned %>%
+  select(Date_reported, New_cases, New_deaths) %>%
+  pivot_longer(cols = c(New_cases, New_deaths), names_to = "metric", values_to = "value") 
+  
+head(who_cases_long)
+
+who_vacccine_long <- who_vacine_cleaned %>%
+  select(FIRST_VACCINE_DATE, starts_with("Persons")) %>%
+  pivot_longer(cols = starts_with("PERSONS"), names_to = "metric", values_to = "value")
+head(who_vacccine_long)
+
+state_df_long <- state_df_cleaned %>%
+  select(date, actuals.hospitalBeds.currentUsageCovid, actuals.cases, actuals.deaths) %>%
+  pivot_longer(cols = c(actuals.hospitalBeds.currentUsageCovid, actuals.cases, actuals.deaths),
+               names_to = "metric", values_to = "value") %>%
+  filter(!is.na(value) & value > 0)
+head(state_df_long)
+```
+
+
+## Visualization
+```{r}
+global_cases_plot <- who_cases_long %>%
+  ggplot(aes(x = Date_reported, y = value, color = metric)) +
+  geom_line() +
+  labs(title = "Covid-19 Global Cases and Deaths", x = "Date", y = "Count") +
+  theme_minimal()
+print(global_cases_plot)
+
+global_vaccine_plot <- who_vacccine_long %>%
+  ggplot(aes(x = FIRST_VACCINE_DATE, y = value, color = metric)) +
+  geom_line() +
+  labs(title = "Global Vaccination Metrics", x = "Date", y = "Value") +
+  theme_minimal()
+print(global_vaccine_plot)
+
+state_plot <- state_df_long %>%
+  ggplot(aes(x = date, y = value, color = metric)) +
+  geom_line() +
+  labs(title = "State-Level COVID-19 Metrics", x = "Date", y = "Value") +
+  theme_minimal()
+print(state_plot)
+```
+
+## Statistical Analysis and Hypothesis Testing
+
+Hypothesis: Higher hospital bed usage due to COVID correlates with higher reported case counts.
+```{r}
+state_analysis_df <- state_df_cleaned %>%
+  filter(!is.na(actuals.hospitalBeds.currentUsageCovid), !is.na(actuals.cases)) %>%
+  select(date, actuals.hospitalBeds.currentUsageCovid, actuals.cases)
+
+head(state_analysis_df)
+
+# Correlation Analysis
+correlation_result <- cor.test(
+  state_analysis_df$actuals.hospitalBeds.currentUsageCovid,
+  state_analysis_df$actuals.cases,
+  method = "pearson"
+)
+print(correlation_result)
+
+state_correlation_plot <- state_analysis_df %>%
+  ggplot(aes(x = actuals.hospitalBeds.currentUsageCovid, y = actuals.cases)) +
+  geom_point(alpha = 0.6, color = "blue") +
+  geom_smooth(method = "lm", color = "red", se = TRUE) +
+  labs(title = "Correlation Between Hospital Bed Usage and COVID-19 Cases",
+       x = "Hospital Bed Usage",
+       y = "Reported COVID-19 Cases",
+       subtitle = paste("Pearson Correlation Coefficient:",
+                        round(correlation_result$estimate, 3))) +
+  theme_minimal()
+print(state_correlation_plot)
+```
+
+## Conclusion
+Per the analysis of COVID-19 case datasets, there were several findings.
+
+The correlation analysis revealed a significant positive relationship between COVID-19 case counts and hospital bed usage, with a Pearson correlation coefficient of 0.385. This statistically significant correlation (p-value < 2.2e-16) confirms that higher COVID-19 case counts are strongly associated with increased hospital bed usage, emphasizing the strain on healthcare infrastructure during peak case periods.
+
+The visualization of vaccination metrics and COVID-19 case/death trends shows a noticeable reduction in new cases and deaths after vaccination roll outs. This demonstrates the positive impact of vaccines on mitigating the spread of the virus.
+
+## Future Directions
+- Conduct a deeper analysis of vaccination rates across specific demographic groups.
+- Perform predictive modeling to forecast future cases, hospitalizations, and deaths based on vaccination rates and policy changes.
+- Explore regional differences in vaccination impact to support localized health policies.
+
+
+
